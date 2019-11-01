@@ -2,11 +2,22 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <chrono>
+#include <nvToolsExt.h>
 
 #define BLOCK_SIZE 256
 #define WARMUP 0
 #define WARMUP_COUNT 10
 #define VERIFY 0
+
+#define cudaCheck(code) cudaErrorDie(code, #code, __FILE__, __LINE__)
+
+void cudaErrorDie(cudaError_t retcode, const char* code, const char* file, int line) {
+  if (retcode != cudaSuccess) {
+    fprintf(stderr, "Fatal CUDA error [%d] %s at %s:%d\n", retcode,
+        cudaGetErrorString(retcode), file, line);
+    abort();
+  }
+}
 
 __global__ void warmup(double* a, double* b, int n) {
   int i = BLOCK_SIZE * blockIdx.x + threadIdx.x;
@@ -60,6 +71,10 @@ int main(int argc, char** argv) {
   double* h_a; double* h_b; double* h_c;
   double* d_a; double* d_b; double* d_c;
 
+  // Explicitly set how host thread behaves when executing device code.
+  // Currently set to spin to include device synchronization time.
+  cudaCheck(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
+
   // Allocate memory
   cudaMallocHost(&h_a, n * sizeof(double));
   cudaMallocHost(&h_b, n * sizeof(double));
@@ -93,18 +108,20 @@ int main(int argc, char** argv) {
     for (int j = 0; j < split; j++) {
       warmup<<<grid_dim, block_dim, 0, streams[j]>>>(d_a + chunk * j, d_b + chunk * j, chunk);
     }
-    cudaDeviceSynchronize();
+    cudaCheck(cudaDeviceSynchronize());
   }
 #endif
 
   auto timer_start = std::chrono::system_clock::now();
+  nvtxRangePush("split");
 
   // Execute split kernels
   for (int i = 0; i < split; i++) {
     vecadd<<<grid_dim, block_dim, 0, streams[i]>>>(d_a + chunk * i, d_b + chunk * i, d_c + chunk * i, chunk);
   }
-  cudaDeviceSynchronize();
+  cudaCheck(cudaDeviceSynchronize());
 
+  nvtxRangePop();
   auto timer_end = std::chrono::system_clock::now();
 
   // Copy result vector back to host
