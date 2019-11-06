@@ -1,0 +1,20 @@
+mainmodule vecadd {
+  readonly CProxy_Main mainProxy;
+  readonly int n_chares;
+  readonly int vector_size;
+  readonly int split;
+  readonly int chunk;
+
+  mainchare Main {
+    entry Main(CkArgMsg* m);
+    entry [reductiontarget] void transfer_complete();
+    entry [reductiontarget] void all_complete();
+  };
+
+  array [1D] Chunk {
+    entry Chunk();
+    entry void transfer();
+    entry void kernel();
+    entry void complete();
+  };
+};
