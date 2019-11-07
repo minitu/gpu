@@ -5,7 +5,6 @@
 #endif
 
 /* readonly */ CProxy_Main mainProxy;
-/* readonly */ int n_chares;
 /* readonly */ int vector_size;
 /* readonly */ int split;
 /* readonly */ int chunk;
@@ -25,17 +24,13 @@ class Main : public CBase_Main {
 #endif
 
     mainProxy = thisProxy;
-    n_chares = 4;
     vector_size = 1024;
-    split = 1;
+    split = 1; // Equal to number of chares
 
     // Process command line arguments
     int c;
-    while ((c = getopt(m->argc, m->argv, "c:n:s:")) != -1) {
+    while ((c = getopt(m->argc, m->argv, "n:s:")) != -1) {
       switch (c) {
-        case 'c':
-          n_chares = atoi(optarg);
-          break;
         case 'n':
           vector_size = atoi(optarg);
           break;
@@ -43,18 +38,16 @@ class Main : public CBase_Main {
           split = atoi(optarg);
           break;
         default:
-          CkPrintf("Usage: %s -c [chares] -n [vector size] -s [split]\n",
-              m->argv[0]);
+          CkPrintf("Usage: %s -n [vector size] -s [split]\n", m->argv[0]);
           CkExit();
       }
     }
     delete m;
 
-    // Data size per chare (PE)
+    // Data size per PE
     chunk = vector_size / split;
 
-    CkPrintf("chares: %d, vector size: %d, split: %d, chunk: %d\n", n_chares,
-        vector_size, split, chunk);
+    CkPrintf("vector size: %d, split: %d, chunk: %d\n", vector_size, split, chunk);
 
     if (vector_size % split != 0) {
       CkAbort("Vector size should be divisible by split");
@@ -63,24 +56,32 @@ class Main : public CBase_Main {
     start_time = CkWallTimer();
 
     // Create chunk chares and initiate H2D data transfers
-    chunks = CProxy_Chunk::ckNew(n_chares);
-    chunks.transfer();
+    chunks = CProxy_Chunk::ckNew(split);
+    chunks.h2d();
   }
 
-  void transfer_complete() {
-#ifdef USE_NVTXX
-    NVTXTracer nvtx_range("Main::transfer_complete", NVTXColor::Turquoise);
+  void h2d_complete() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Main::h2d_complete", NVTXColor::Turquoise);
 #endif
 
     chunks.kernel();
   }
 
-  void all_complete() {
+  void kernel_complete() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range("Main::all_complete", NVTXColor::Turquoise);
+    NVTXTracer nvtx_range("Main::kernel_complete", NVTXColor::Turquoise);
 #endif
 
-    CkPrintf("\nElapsed time: %.3lf us\n", (CkWallTimer() - start_time) * 1000000);
+    chunks.d2h();
+  }
+
+  void d2h_complete() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Main::d2h_complete", NVTXColor::Turquoise);
+#endif
+
+    CkPrintf("\nElapsed time: %.6lf s\n", CkWallTimer() - start_time);
     CkExit();
   }
 };
@@ -131,18 +132,27 @@ class Chunk : public CBase_Chunk {
     hapiCheck(cudaStreamDestroy(stream));
   }
 
-  void transfer() {
+  void h2d() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range("Chunk::transfer", NVTXColor::Carrot);
+    NVTXTracer nvtx_range("Chunk::h2d", NVTXColor::Carrot);
 #endif
 
     // Copy input vectors to device
     hapiCheck(cudaMemcpyAsync(d_A, h_A, size, cudaMemcpyHostToDevice, stream));
     hapiCheck(cudaMemcpyAsync(d_B, h_B, size, cudaMemcpyHostToDevice, stream));
-    hapiCheck(cudaStreamSynchronize(stream));
+
+    // Set up callback
+    CkCallback* cb = new CkCallback(CkIndex_Chunk::h2d_done(), thisProxy[thisIndex]);
+    hapiAddCallback(stream, cb);
+  }
+
+  void h2d_done() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Chunk::h2d_done", NVTXColor::Clouds);
+#endif
 
     // Synchronize
-    contribute(CkCallback(CkReductionTarget(Main, transfer_complete), mainProxy));
+    contribute(CkCallback(CkReductionTarget(Main, h2d_complete), mainProxy));
   }
 
   void kernel() {
@@ -153,22 +163,39 @@ class Chunk : public CBase_Chunk {
     // Invoke kernel
     cudaVecAdd(chunk, h_A, h_B, h_C, d_A, d_B, d_C, stream);
 
+    // Set up callback
+    CkCallback* cb = new CkCallback(CkIndex_Chunk::kernel_done(), thisProxy[thisIndex]);
+    hapiAddCallback(stream, cb);
+  }
+
+  void kernel_done() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Chunk::kernel_done", NVTXColor::Clouds);
+#endif
+
+    // Synchronize
+    contribute(CkCallback(CkReductionTarget(Main, kernel_complete), mainProxy));
+  }
+
+  void d2h() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Chunk::d2h", NVTXColor::Carrot);
+#endif
+
     // Copy output vector to host
     hapiCheck(cudaMemcpyAsync(h_C, d_C, size, cudaMemcpyDeviceToHost, stream));
 
     // Set up callback
-    CkArrayIndex1D myIndex = CkArrayIndex1D(thisIndex);
-    CkCallback* cb =
-        new CkCallback(CkIndex_Chunk::complete(), myIndex, thisArrayID);
+    CkCallback* cb = new CkCallback(CkIndex_Chunk::d2h_done(), thisProxy[thisIndex]);
     hapiAddCallback(stream, cb);
   }
 
-  void complete() {
+  void d2h_done() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range("Chunk::complete", NVTXColor::Clouds);
+    NVTXTracer nvtx_range("Chunk::d2h_done", NVTXColor::Clouds);
 #endif
 
-    contribute(CkCallback(CkReductionTarget(Main, all_complete), mainProxy));
+    contribute(CkCallback(CkReductionTarget(Main, d2h_complete), mainProxy));
   }
 };
 
