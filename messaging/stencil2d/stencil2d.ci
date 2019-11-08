@@ -1,0 +1,59 @@
+mainmodule stencil2d {
+  readonly CProxy_Main main_proxy;
+  readonly CProxy_Block block_proxy;
+  readonly int grid_dim;
+  readonly int block_x;
+  readonly int block_y;
+  readonly int n_chares_x;
+  readonly int n_chares_y;
+  readonly int n_iters;
+  readonly int thread_coarsening;
+  readonly bool unified_memory;
+
+  mainchare Main {
+    entry Main(CkArgMsg* m);
+    entry [reductiontarget] void done(double time);
+  };
+
+  array [2D] Block {
+    entry Block(void);
+    entry void init();
+    entry void receiveGhosts(int ref, int dir, int w, double gh[w]);
+
+    entry void iterate() {
+      serial {
+        // Measure iteration time
+        if (my_iter > 0) {
+          total_time += CkWallTimer() - iter_start_time;
+        }
+        iter_start_time = CkWallTimer();
+
+        // Terminate if all iterations are complete
+        if (my_iter >= n_iters) {
+          CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
+              (total_time / n_iters) * 1000000);
+          CkCallback cb(CkReductionTarget(Main, done), mainProxy);
+          contribute(sizeof(double), &agg_time, CkReduction::sum_double, cb);
+        }
+        else {
+          // Send ghost data to neighbors
+          sendGhosts();
+        }
+      }
+
+      // Receive ghost data from neighbors
+      for (remote_count = 0; remote_count < neighbors; remote_count++) {
+        when receiveGhosts[my_iter](int ref, int dir, int w, double buf[w]) serial {
+          processGhosts(dir, w, buf);
+        }
+      }
+
+      serial {
+        // Perform stencil computation
+        update();
+
+        my_iter++;
+      }
+    };
+  };
+};
