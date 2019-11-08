@@ -12,13 +12,17 @@ mainmodule stencil2d {
 
   mainchare Main {
     entry Main(CkArgMsg* m);
-    entry [reductiontarget] void done(double time);
+    entry [reductiontarget] void done();
   };
 
   array [2D] Block {
     entry Block(void);
     entry void init();
+    entry void prepareGhostsDone(CkMessage* msg);
     entry void receiveGhosts(int ref, int dir, int w, double gh[w]);
+    entry void processGhostsDone(CkMessage* msg);
+    entry void updateDone(CkMessage* msg);
+    entry void validateAndTerminate();
 
     entry void iterate() {
       serial {
@@ -28,17 +32,22 @@ mainmodule stencil2d {
         }
         iter_start_time = CkWallTimer();
 
-        // Terminate if all iterations are complete
         if (my_iter >= n_iters) {
+          // Terminate if all iterations are complete
           CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
               (total_time / n_iters) * 1000000);
-          CkCallback cb(CkReductionTarget(Main, done), mainProxy);
-          contribute(sizeof(double), &agg_time, CkReduction::sum_double, cb);
+          contribute(CkCallback(CkReductionTarget(Main, done), main_proxy));
         }
         else {
-          // Send ghost data to neighbors
-          sendGhosts();
+          // Prepare ghost regions for sending
+          prepareGhosts();
         }
+      }
+
+      // Send ghosts once they are prepared
+      when prepareGhostsDone[my_iter](const CkMessage* msg) serial {
+        delete msg;
+        sendGhosts();
       }
 
       // Receive ghost data from neighbors
@@ -48,11 +57,35 @@ mainmodule stencil2d {
         }
       }
 
-      serial {
-        // Perform stencil computation
+      // Perform stencil computation once the ghost data are integrated
+      when processGhostsDone[my_iter](const CkMessage* msg) serial {
+        delete msg;
         update();
+      }
 
-        my_iter++;
+      when updateDone[my_iter](const CkMessage* msg) serial {
+        delete msg;
+
+        if (my_iter == n_iters-1) {
+          validateAndTerminate();
+        }
+        else {
+          // Swap pointers
+          double* tmp;
+          if (!unified_memory) {
+            tmp = d_temperature;
+            d_temperature = d_new_temperature;
+            d_new_temperature = tmp;
+          }
+          else {
+            tmp = temperature;
+            temperature = new_temperature;
+            new_temperature = tmp;
+          }
+
+          my_iter++;
+          thisProxy[thisIndex].iterate();
+        }
       }
     };
   };

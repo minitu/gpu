@@ -1,11 +1,10 @@
 #include "hapi.h"
 
-#ifndef DIVIDEBY5
+#define TILE_SIZE 16
 #define DIVIDEBY5 0.2
-#endif
 
 __global__ void stencil2DKernel(double* temperature, double* new_temperature,
-                                int block_x, int block_y, int thread_size) {
+    int block_x, int block_y, int thread_size) {
   int i_start = (blockDim.x * blockIdx.x + threadIdx.x) * thread_size + 1;
   int i_finish =
       (blockDim.x * blockIdx.x + threadIdx.x) * thread_size + thread_size;
@@ -28,16 +27,15 @@ __global__ void stencil2DKernel(double* temperature, double* new_temperature,
   }
 }
 
-void invokeKernel(cudaStream_t stream, double* d_temperature,
-                  double* d_new_temperature, int block_x, int block_y,
-                  int thread_size) {
+void invokeKernel(double* d_temperature, double* d_new_temperature, int block_x,
+    int block_y, int thread_size, cudaStream_t stream) {
   dim3 block_dim(TILE_SIZE, TILE_SIZE);
   dim3 grid_dim(
       (block_x + (block_dim.x * thread_size - 1)) / (block_dim.x * thread_size),
-      (block_y + (block_dim.y * thread_size - 1)) /
-          (block_dim.y * thread_size));
+      (block_y + (block_dim.y * thread_size - 1)) / (block_dim.y * thread_size));
 
-  stencil2DKernel<<<grid_dim, block_dim, 0, stream>>>(
-      d_temperature, d_new_temperature, block_x, block_y, thread_size);
+  stencil2DKernel<<<grid_dim, block_dim, 0, stream>>>(d_temperature,
+      d_new_temperature, block_x, block_y, thread_size);
+
   hapiCheck(cudaPeekAtLastError());
 }

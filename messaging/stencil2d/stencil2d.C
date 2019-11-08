@@ -5,6 +5,8 @@
 #include "hapi_nvtx.h"
 #endif
 
+#define PRINT 1
+
 #define WEST 1
 #define EAST 2
 #define NORTH 3
@@ -22,9 +24,8 @@
 /* readonly */ int thread_coarsening;
 /* readonly */ bool unified_memory;
 
-extern void invokeKernel(cudaStream_t stream, double* d_temperature,
-                         double* d_new_temperature, int block_x, int block_y,
-                         int thread_coarsening);
+extern void invokeKernel(double* d_temperature, double* d_new_temperature,
+    int block_x, int block_y, int thread_coarsening, cudaStream_t stream);
 
 class Main : public CBase_Main {
   double start_time;
@@ -66,7 +67,7 @@ class Main : public CBase_Main {
           unified_memory = true;
           break;
         default:
-          CkAbort();
+          CkAbort("Unknown command line argument detected");
       }
     }
     delete m;
@@ -89,7 +90,7 @@ class Main : public CBase_Main {
 
     start_time = CkWallTimer();
 
-    stencils.init();
+    block_proxy.init();
   }
 
   void done() {
@@ -226,13 +227,18 @@ class Block : public CBase_Block {
     }
   }
 
-  void sendGhosts(void) {
+  void prepareGhosts() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::sendGhosts",
-        NVTXColor::PeterRiver);
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::prepareGhosts",
+        NVTXColor::MidnightBlue);
 #endif
 
-    // Copy ghost data into contiguous buffers
+    // Set up callback to be invoked once preparation is done
+    CkCallback* cb = new CkCallback(CkIndex_Block::prepareGhostsDone(NULL), thisProxy[thisIndex]);
+    cb->setRefnum(my_iter);
+
+    // Copy ghost data into contiguous buffers.
+    // Explicit data transfers are required without unified memory.
     if (!unified_memory) {
       // West ghost
       hapiCheck(cudaMemcpy2DAsync(west_ghost, sizeof(double),
@@ -254,6 +260,8 @@ class Block : public CBase_Block {
       // South ghost
       hapiCheck(cudaMemcpyAsync(south_ghost, d_new_temperature + (block_x + 2) * block_y + 1,
             block_x * sizeof(double), cudaMemcpyDeviceToHost, stream));
+
+      hapiAddCallback(stream, cb);
     }
     else {
       for (int j = 0; j < block_y; j++) {
@@ -265,7 +273,16 @@ class Block : public CBase_Block {
         north_ghost[i] = temperature[(block_x + 2) + (1 + i)];
         south_ghost[i] = temperature[(block_x + 2) * block_y + (1 + i)];
       }
+
+      cb->send();
     }
+  }
+
+  void sendGhosts(void) {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::sendGhosts",
+        NVTXColor::MidnightBlue);
+#endif
 
     // Send ghost data to neighbors
     int x = thisIndex.x, y = thisIndex.y;
@@ -281,56 +298,60 @@ class Block : public CBase_Block {
 
   void processGhosts(int dir, int width, double* gh) {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Stencil::processGhosts", NVTXColor::WetAsphalt);
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::processGhosts",
+        NVTXColor::WetAsphalt);
 #endif
+
     switch (dir) {
       case WEST:
-        if (local_exec_mode == CUDA_MODE || local_exec_mode == HAPI_MODE) {
+        if (!unified_memory) {
           memcpy(west_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpy2DAsync(
-              d_temperature + (block_x + 2), (block_x + 2) * sizeof(double),
+              d_temperature + (block_x + 2) + 1, (block_x + 2) * sizeof(double),
               west_ghost, sizeof(double), sizeof(double), block_y,
               cudaMemcpyHostToDevice, stream));
-        } else {
+        }
+        else {
           for (int j = 0; j < width; j++) {
-            temperature[(block_x + 2) * (1 + j)] = gh[j];
+            temperature[(block_x + 2) * (1 + j) + 1] = gh[j];
           }
         }
         break;
       case EAST:
-        if (local_exec_mode == CUDA_MODE || local_exec_mode == HAPI_MODE) {
+        if (!unified_memory) {
           memcpy(east_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpy2DAsync(
-              d_temperature + (block_x + 2) + (block_x + 1),
-              (block_x + 2) * sizeof(double), east_ghost, sizeof(double),
-              sizeof(double), block_y, cudaMemcpyHostToDevice, stream));
-        } else {
-          for (int j = 0; j < width; j++) {
-            temperature[(block_x + 2) * (1 + j) + (block_x + 1)] = gh[j];
-          }
+              d_temperature + (block_x + 2) + block_x, (block_x + 2) * sizeof(double),
+              east_ghost, sizeof(double), sizeof(double), block_y,
+              cudaMemcpyHostToDevice, stream));
         }
-        break;
-      case SOUTH:
-        if (local_exec_mode == CUDA_MODE || local_exec_mode == HAPI_MODE) {
-          memcpy(south_ghost, gh, width * sizeof(double));
-          hapiCheck(cudaMemcpyAsync(d_temperature + 1, south_ghost,
-                                    block_x * sizeof(double),
-                                    cudaMemcpyHostToDevice, stream));
-        } else {
+        else {
           for (int j = 0; j < width; j++) {
-            temperature[1 + j] = gh[j];
+            temperature[(block_x + 2) * (1 + j) + block_x] = gh[j];
           }
         }
         break;
       case NORTH:
-        if (local_exec_mode == CUDA_MODE || local_exec_mode == HAPI_MODE) {
+        if (!unified_memory) {
           memcpy(north_ghost, gh, width * sizeof(double));
-          hapiCheck(cudaMemcpyAsync(
-              d_temperature + (block_x + 2) * (block_y + 1) + 1, north_ghost,
-              block_x * sizeof(double), cudaMemcpyHostToDevice, stream));
-        } else {
-          for (int j = 0; j < width; j++) {
-            temperature[(block_x + 2) * (block_y + 1) + (1 + j)] = gh[j];
+          hapiCheck(cudaMemcpyAsync(d_temperature + (block_x + 2) + 1,
+                north_ghost, block_x * sizeof(double), cudaMemcpyHostToDevice, stream));
+        }
+        else {
+          for (int i = 0; i < width; i++) {
+            temperature[(block_x + 2) + (1 + i)] = gh[i];
+          }
+        }
+        break;
+      case SOUTH:
+        if (!unified_memory) {
+          memcpy(south_ghost, gh, width * sizeof(double));
+          hapiCheck(cudaMemcpyAsync(d_temperature + (block_x + 2) * block_y + 1,
+                south_ghost, block_x * sizeof(double), cudaMemcpyHostToDevice, stream));
+        }
+        else {
+          for (int i = 0; i < width; i++) {
+            temperature[(block_x + 2) * block_y + (1 + i)] = gh[i];
           }
         }
         break;
@@ -339,59 +360,60 @@ class Block : public CBase_Block {
     }
   }
 
-  // Updates local data with stencil computation.
   void update() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Stencil::update", NVTXColor::Amethyst);
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::update",
+        NVTXColor::Amethyst);
 #endif
 
-    CallbackMsg* m = new CallbackMsg();
-    if (local_exec_mode == CUDA_MODE || local_exec_mode == HAPI_MODE) {
-      // Invoke 2D stencil kernel
-      invokeKernel(stream, d_temperature, d_new_temperature, block_x, block_y,
-                   thread_coarsening);
+    // Set up callback
+    CkCallback* cb = new CkCallback(CkIndex_Block::updateDone(NULL), thisProxy[thisIndex]);
+    cb->setRefnum(my_iter);
 
+    // Invoke Kernel
+    // FIXME: Does not need to wait until data transfer is complete,
+    // but what about unified memory?
+    if (!unified_memory) {
+      invokeKernel(d_temperature, d_new_temperature, block_x, block_y,
+          thread_coarsening, stream);
+    }
+    else {
+      invokeKernel(temperature, new_temperature, block_x, block_y,
+          thread_coarsening, stream);
+    }
 
-      // Copy final temperature data back to host (on last iteration)
-      if (my_iter == n_iters - 1) {
-        hapiCheck(
-            cudaMemcpyAsync(temperature, d_new_temperature,
-                            sizeof(double) * (block_x + 2) * (block_y + 2),
-                            cudaMemcpyDeviceToHost, stream));
+    // Copy final temperature data back to host (on last iteration)
+    if (my_iter == n_iters-1) {
+      if (!unified_memory) {
+        hapiCheck(cudaMemcpyAsync(temperature, d_new_temperature,
+              sizeof(double) * (block_x + 2) * (block_y + 2),
+              cudaMemcpyDeviceToHost, stream));
       }
+    }
 
-      if (local_exec_mode == CUDA_MODE) {
-        cudaStreamSynchronize(stream);
+    hapiAddCallback(stream, cb);
+  }
 
-        thisProxy(thisIndex.x, thisIndex.y).iterate(m);
-      } else {
-        CkArrayIndex2D myIndex = CkArrayIndex2D(thisIndex);
-        CkCallback* cb =
-            new CkCallback(CkIndex_Stencil::iterate(NULL), myIndex, thisProxy);
-        if (gpu_prio)
-          CkSetQueueing(m, CK_QUEUEING_LIFO);
-        hapiAddCallback(stream, cb, m);
-      }
-    } else {  // CPU_MODE
-      for (int i = 1; i <= block_x; ++i) {
-        for (int j = 1; j <= block_y; ++j) {
-          // Update my value based on the surrounding values
-          new_temperature[j * (block_x + 2) + i] =
-              (temperature[j * (block_x + 2) + (i - 1)] +
-               temperature[j * (block_x + 2) + (i + 1)] +
-               temperature[(j - 1) * (block_x + 2) + i] +
-               temperature[(j + 1) * (block_x + 2) + i] +
-               temperature[j * (block_x + 2) + i]) *
-              DIVIDEBY5;
+  void validateAndTerminate() {
+#if PRINT
+    CkPrintf("Block (%d, %d)\n", thisIndex.x, thisIndex.y);
+    for (int j = 0; j < block_y + 2; j++) {
+      for (int i = 0; i < block_x + 2; i++) {
+        if (!unified_memory) {
+          CkPrintf("%.3lf ", temperature[(block_x + 2) * j + i]);
+        }
+        else {
+          CkPrintf("%.3lf ", new_temperature[(block_x + 2) * j + i]);
         }
       }
-      double* tmp;
-      tmp = temperature;
-      temperature = new_temperature;
-      new_temperature = tmp;
-
-      thisProxy(thisIndex.x, thisIndex.y).iterate(m);
+      CkPrintf("\n");
     }
+#endif
+
+    // Reduce back to Main for termination
+    CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
+        (total_time / n_iters) * 1000000);
+    contribute(CkCallback(CkReductionTarget(Main, done), main_proxy));
   }
 
   void constrainBC() {

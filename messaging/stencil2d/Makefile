@@ -1,14 +1,13 @@
--include ../../../../common.mk
-CHARMC = ../../../../bin/charmc $(OPTS)
-OPTS = -O3 -fopt-info-vec-optimized #-DUSE_NVTX
+OPTS = -O3 -DUSE_NVTX
 
-# set CUDATOOLKIT_HOME to the CUDA toolkit directory
-CUDATOOLKIT_HOME ?= /usr/local/cuda
-NVCC = $(CUDATOOLKIT_HOME)/bin/nvcc
-NVCC_FLAGS = -O3 -c -std=c++11 -DTILE_SIZE=16 -use_fast_math
-NVCC_INC = -I$(CUDATOOLKIT_HOME)/include
-CHARM_INC = -I../../../../include
-LD_LIBS = #-lnvToolsExt
+CHARM_DIR = $(HOME)/charm
+CHARMC = $(CHARM_DIR)/bin/charmc $(OPTS)
+CHARM_INC = -I$(CHARM_DIR)/include
+
+CUDA_DIR ?= $(CUDA_HOME)
+NVCC = $(CUDA_DIR)/bin/nvcc
+NVCC_FLAGS = -O3 -c -std=c++11 -use_fast_math
+LD_LIBS = -lnvToolsExt
 
 TARGET = stencil2d
 all: $(TARGET)
@@ -25,10 +24,7 @@ $(TARGET).o: $(TARGET).C $(TARGET).decl.h
 	$(CHARMC) -c $<
 
 $(TARGET)CUDA.o: $(TARGET).cu
-	$(NVCC) -o $@ $(NVCC_FLAGS) $(NVCC_INC) $(CHARM_INC) $<
+	$(NVCC) -o $@ $(NVCC_FLAGS) $(CHARM_INC) $<
 
 clean:
 	rm -f *.decl.h *.def.h conv-host *.o $(TARGET) charmrun
-
-test: all
-	$(call run, ./$(TARGET) +p2 32 16 )
