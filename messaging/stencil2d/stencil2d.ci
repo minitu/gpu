@@ -12,7 +12,7 @@ mainmodule stencil2d {
 
   mainchare Main {
     entry Main(CkArgMsg* m);
-    entry [reductiontarget] void done();
+    entry void done();
   };
 
   array [2D] Block {
@@ -20,28 +20,15 @@ mainmodule stencil2d {
     entry void init();
     entry void prepareGhostsDone(CkMessage* msg);
     entry void receiveGhosts(int ref, int dir, int w, double gh[w]);
-    entry void processGhostsDone(CkMessage* msg);
     entry void updateDone(CkMessage* msg);
     entry void validateAndTerminate();
 
     entry void iterate() {
       serial {
-        // Measure iteration time
-        if (my_iter > 0) {
-          total_time += CkWallTimer() - iter_start_time;
-        }
         iter_start_time = CkWallTimer();
 
-        if (my_iter >= n_iters) {
-          // Terminate if all iterations are complete
-          CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
-              (total_time / n_iters) * 1000000);
-          contribute(CkCallback(CkReductionTarget(Main, done), main_proxy));
-        }
-        else {
-          // Prepare ghost regions for sending
-          prepareGhosts();
-        }
+        // Prepare ghost regions for sending
+        prepareGhosts();
       }
 
       // Send ghosts once they are prepared
@@ -58,16 +45,19 @@ mainmodule stencil2d {
       }
 
       // Perform stencil computation once the ghost data are integrated
-      when processGhostsDone[my_iter](const CkMessage* msg) serial {
-        delete msg;
+      serial {
         update();
       }
 
       when updateDone[my_iter](const CkMessage* msg) serial {
         delete msg;
 
+        total_time += CkWallTimer() - iter_start_time;
+
         if (my_iter == n_iters-1) {
-          validateAndTerminate();
+          if (thisIndex.x == 0 && thisIndex.y == 0) {
+            thisProxy[thisIndex].validateAndTerminate();
+          }
         }
         else {
           // Swap pointers
