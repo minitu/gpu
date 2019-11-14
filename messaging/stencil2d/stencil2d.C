@@ -157,12 +157,13 @@ class Block : public CBase_Block {
   }
 
   void init() {
+    thisFlatIndex = n_chares_x * thisIndex.y + thisIndex.x;
+
 #ifdef USE_NVTX
     NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::init",
         NVTXColor::PeterRiver);
 #endif
 
-    thisFlatIndex = n_chares_x * thisIndex.y + thisIndex.x;
     my_iter = 0;
     neighbors = 0;
     total_time = 0.0;
