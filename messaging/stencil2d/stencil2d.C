@@ -4,14 +4,9 @@
 #ifdef USE_NVTX
 #include "hapi_nvtx.h"
 #endif
+#include "stencil2d.h"
 
 #define PRINT 1
-
-#define WEST 1
-#define EAST 2
-#define NORTH 3
-#define SOUTH 4
-#define DIVIDEBY5 0.2
 
 /* readonly */ CProxy_Main main_proxy;
 /* readonly */ CProxy_Block block_proxy;
@@ -27,6 +22,8 @@
 extern void invokePackingKernel(double* temperature, double* west_ghost,
     double* east_ghost, double* north_ghost, double* south_ghost, int block_x,
     int block_y, cudaStream_t stream);
+extern void invokeUnpackingKernel(double* temperature, double* ghost, int width,
+    int dir, int block_x, int block_y, cudaStream_t stream);
 extern void invokeStencilKernel(double* d_temperature, double* d_new_temperature,
     int block_x, int block_y, int thread_coarsening, cudaStream_t stream);
 
@@ -297,13 +294,12 @@ class Block : public CBase_Block {
 
     switch (dir) {
       case WEST:
+        memcpy(west_ghost, gh, width * sizeof(double));
         if (unified_memory) {
-          for (int j = 0; j < width; j++) {
-            temperature[(block_x + 2) * (1 + j)] = gh[j];
-          }
+          invokeUnpackingKernel(temperature, west_ghost, width, WEST, block_x,
+              block_y, stream);
         }
         else {
-          memcpy(west_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpy2DAsync(
               d_temperature + (block_x + 2), (block_x + 2) * sizeof(double),
               west_ghost, sizeof(double), sizeof(double), block_y,
@@ -311,13 +307,12 @@ class Block : public CBase_Block {
         }
         break;
       case EAST:
+        memcpy(east_ghost, gh, width * sizeof(double));
         if (unified_memory) {
-          for (int j = 0; j < width; j++) {
-            temperature[(block_x + 2) * (1 + j) + (block_x + 1)] = gh[j];
-          }
+          invokeUnpackingKernel(temperature, east_ghost, width, EAST, block_x,
+              block_y, stream);
         }
         else {
-          memcpy(east_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpy2DAsync(
               d_temperature + (block_x + 2) + (block_x + 1), (block_x + 2) * sizeof(double),
               east_ghost, sizeof(double), sizeof(double), block_y,
@@ -325,25 +320,23 @@ class Block : public CBase_Block {
         }
         break;
       case NORTH:
+        memcpy(north_ghost, gh, width * sizeof(double));
         if (unified_memory) {
-          for (int i = 0; i < width; i++) {
-            temperature[1 + i] = gh[i];
-          }
+          invokeUnpackingKernel(temperature, north_ghost, width, NORTH, block_x,
+              block_y, stream);
         }
         else {
-          memcpy(north_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpyAsync(d_temperature + 1,
                 north_ghost, block_x * sizeof(double), cudaMemcpyHostToDevice, stream));
         }
         break;
       case SOUTH:
+        memcpy(south_ghost, gh, width * sizeof(double));
         if (unified_memory) {
-          for (int i = 0; i < width; i++) {
-            temperature[(block_x + 2) * (block_y + 1) + (1 + i)] = gh[i];
-          }
+          invokeUnpackingKernel(temperature, south_ghost, width, SOUTH, block_x,
+              block_y, stream);
         }
         else {
-          memcpy(south_ghost, gh, width * sizeof(double));
           hapiCheck(cudaMemcpyAsync(d_temperature + (block_x + 2) * (block_y + 1) + 1,
                 south_ghost, block_x * sizeof(double), cudaMemcpyHostToDevice, stream));
         }

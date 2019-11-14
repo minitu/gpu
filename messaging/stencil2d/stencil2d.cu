@@ -1,7 +1,7 @@
 #include "hapi.h"
+#include "stencil2d.h"
 
 #define TILE_SIZE 16
-#define DIVIDEBY5 0.2
 
 __global__ void packingKernel(double* temperature, double* west_ghost,
     double* east_ghost, double* north_ghost, double* south_ghost, int block_x,
@@ -21,6 +21,25 @@ __global__ void packingKernel(double* temperature, double* west_ghost,
   else if (i < 2 * block_y + 2 * block_x && south_ghost != NULL) {
     i -= (2 * block_y + block_x);
     south_ghost[i] = temperature[(block_x + 2) * block_y + (1 + i)];
+  }
+}
+
+__global__ void unpackingKernel(double* temperature, double* ghost, int width,
+    int dir, int block_x, int block_y) {
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  if (i < width) {
+    if (dir == WEST) {
+      temperature[(block_x + 2) * (1 + i)] = ghost[i];
+    }
+    else if (dir == EAST) {
+      temperature[(block_x + 2) * (1 + i) + (block_x + 1)] = ghost[i];
+    }
+    else if (dir == NORTH) {
+      temperature[1 + i] = ghost[i];
+    }
+    else if (dir == SOUTH) {
+      temperature[(block_x + 2) * (block_y + 1) + (1 + i)] = ghost[i];
+    }
   }
 }
 
@@ -60,8 +79,19 @@ void invokePackingKernel(double* temperature, double* west_ghost, double* east_g
   hapiCheck(cudaPeekAtLastError());
 }
 
-void invokeStencilKernel(double* d_temperature, double* d_new_temperature, int block_x,
-    int block_y, int thread_size, cudaStream_t stream) {
+void invokeUnpackingKernel(double* temperature, double* ghost, int width,
+    int dir, int block_x, int block_y, cudaStream_t stream) {
+  dim3 block_dim(TILE_SIZE);
+  dim3 grid_dim((width + block_dim.x - 1) / block_dim.x);
+
+  unpackingKernel<<<grid_dim, block_dim, 0, stream>>>(temperature, ghost, width,
+      dir, block_x, block_y);
+
+  hapiCheck(cudaPeekAtLastError());
+}
+
+void invokeStencilKernel(double* d_temperature, double* d_new_temperature,
+    int block_x, int block_y, int thread_size, cudaStream_t stream) {
   dim3 block_dim(TILE_SIZE, TILE_SIZE);
   dim3 grid_dim(
       (block_x + (block_dim.x * thread_size - 1)) / (block_dim.x * thread_size),

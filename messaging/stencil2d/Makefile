@@ -20,10 +20,10 @@ $(TARGET): $(OBJS)
 $(TARGET).decl.h: $(TARGET).ci
 	$(CHARMC) $<
 
-$(TARGET).o: $(TARGET).C $(TARGET).decl.h
+$(TARGET).o: $(TARGET).C $(TARGET).decl.h $(TARGET).h
 	$(CHARMC) -c $<
 
-$(TARGET)CUDA.o: $(TARGET).cu
+$(TARGET)CUDA.o: $(TARGET).cu $(TARGET).h
 	$(NVCC) -o $@ $(NVCC_FLAGS) $(CHARM_INC) $<
 
 clean:
