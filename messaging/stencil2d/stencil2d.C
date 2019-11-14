@@ -24,7 +24,10 @@
 /* readonly */ int thread_coarsening;
 /* readonly */ bool unified_memory;
 
-extern void invokeKernel(double* d_temperature, double* d_new_temperature,
+extern void invokePackingKernel(double* temperature, double* west_ghost,
+    double* east_ghost, double* north_ghost, double* south_ghost, int block_x,
+    int block_y, cudaStream_t stream);
+extern void invokeStencilKernel(double* d_temperature, double* d_new_temperature,
     int block_x, int block_y, int thread_coarsening, cudaStream_t stream);
 
 class Main : public CBase_Main {
@@ -236,28 +239,9 @@ class Block : public CBase_Block {
     // Copy ghost data into contiguous buffers.
     // Explicit data transfers are required without unified memory.
     if (unified_memory) {
-      if (!west_bound) {
-        for (int j = 0; j < block_y; j++) {
-          west_ghost[j] = temperature[(block_x + 2) * (1 + j) + 1];
-        }
-      }
-      if (!east_bound) {
-        for (int j = 0; j < block_y; j++) {
-          east_ghost[j] = temperature[(block_x + 2) * (1 + j) + block_x];
-        }
-      }
-      if (!north_bound) {
-        for (int i = 0; i < block_x; i++) {
-          north_ghost[i] = temperature[(block_x + 2) + (1 + i)];
-        }
-      }
-      if (!south_bound) {
-        for (int i = 0; i < block_x; i++) {
-          south_ghost[i] = temperature[(block_x + 2) * block_y + (1 + i)];
-        }
-      }
-
-      cb->send();
+      invokePackingKernel(temperature, west_bound ? NULL : west_ghost,
+          east_bound ? NULL : east_ghost, north_bound ? NULL : north_ghost,
+          south_bound ? NULL : south_ghost, block_x, block_y, stream);
     }
     else {
       if (!west_bound) {
@@ -281,9 +265,10 @@ class Block : public CBase_Block {
         hapiCheck(cudaMemcpyAsync(south_ghost, d_temperature + (block_x + 2) * block_y + 1,
               block_x * sizeof(double), cudaMemcpyDeviceToHost, stream));
       }
-
-      hapiAddCallback(stream, cb);
     }
+
+    // Set to proceed once previous GPU operations are complete
+    hapiAddCallback(stream, cb);
   }
 
   void sendGhosts(void) {
@@ -382,11 +367,11 @@ class Block : public CBase_Block {
     // FIXME: Does not need to wait until data transfer is complete,
     // but what about unified memory?
     if (unified_memory) {
-      invokeKernel(temperature, new_temperature, block_x, block_y,
+      invokeStencilKernel(temperature, new_temperature, block_x, block_y,
           thread_coarsening, stream);
     }
     else {
-      invokeKernel(d_temperature, d_new_temperature, block_x, block_y,
+      invokeStencilKernel(d_temperature, d_new_temperature, block_x, block_y,
           thread_coarsening, stream);
     }
 
