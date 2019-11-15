@@ -52,9 +52,11 @@ mainmodule stencil2d {
       when updateDone[my_iter](const CkMessage* msg) serial {
         delete msg;
 
+        // Add iteration time
         total_time += CkWallTimer() - iter_start_time;
 
         if (my_iter == n_iters-1) {
+          // Last iteration, terminate
           if (thisIndex.x == 0 && thisIndex.y == 0) {
             thisProxy[thisIndex].validateAndTerminate();
           }
@@ -62,17 +64,11 @@ mainmodule stencil2d {
         else {
           // Swap pointers
           double* tmp;
-          if (!unified_memory) {
-            tmp = d_temperature;
-            d_temperature = d_new_temperature;
-            d_new_temperature = tmp;
-          }
-          else {
-            tmp = temperature;
-            temperature = new_temperature;
-            new_temperature = tmp;
-          }
+          tmp = temperature;
+          temperature = new_temperature;
+          new_temperature = tmp;
 
+          // Move on to next iteration
           my_iter++;
           thisProxy[thisIndex].iterate();
         }

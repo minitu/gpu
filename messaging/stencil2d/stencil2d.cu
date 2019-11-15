@@ -3,6 +3,24 @@
 
 #define TILE_SIZE 16
 
+__global__ void initKernel(double* temperature, double val, int block_x,
+    int block_y, int thread_size) {
+  int i_start = (blockDim.x * blockIdx.x + threadIdx.x) * thread_size + 1;
+  int i_finish =
+      (blockDim.x * blockIdx.x + threadIdx.x) * thread_size + thread_size;
+  int j_start = (blockDim.y * blockIdx.y + threadIdx.y) * thread_size + 1;
+  int j_finish =
+      (blockDim.y * blockIdx.y + threadIdx.y) * thread_size + thread_size;
+
+  for (int i = i_start; i <= i_finish; i++) {
+    for (int j = j_start; j <= j_finish; j++) {
+      if (i <= block_x && j <= block_y) {
+        temperature[(block_x + 2) * j + i] = val;
+      }
+    }
+  }
+}
+
 __global__ void packingKernel(double* temperature, double* west_ghost,
     double* east_ghost, double* north_ghost, double* south_ghost, int block_x,
     int block_y) {
@@ -43,6 +61,26 @@ __global__ void unpackingKernel(double* temperature, double* ghost, int width,
   }
 }
 
+__global__ void boundaryKernel(double* temperature, bool west_bound, bool east_bound,
+    bool north_bound, bool south_bound, int block_x, int block_y) {
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  if (i < block_y && west_bound) {
+    temperature[(block_x + 2) * (1 + i)] = 1.0;
+  }
+  else if (i < 2 * block_y && east_bound) {
+    i -= block_y;
+    temperature[(block_x + 2) * (1 + i) + (block_x + 1)] = 1.0;
+  }
+  else if (i < 2 * block_y + block_x && north_bound) {
+    i -= 2 * block_y;
+    temperature[1 + i] = 1.0;
+  }
+  else if (i < 2 * block_y + 2 * block_x && south_bound) {
+    i -= (2 * block_y + block_x);
+    temperature[(block_x + 2) * (block_y + 1) + (1 + i)] = 1.0;
+  }
+}
+
 __global__ void stencilKernel(double* temperature, double* new_temperature,
     int block_x, int block_y, int thread_size) {
   int i_start = (blockDim.x * blockIdx.x + threadIdx.x) * thread_size + 1;
@@ -67,6 +105,19 @@ __global__ void stencilKernel(double* temperature, double* new_temperature,
   }
 }
 
+void invokeInitKernel(double* temperature, double val, int block_x, int block_y,
+    int thread_size, cudaStream_t stream) {
+  dim3 block_dim(TILE_SIZE, TILE_SIZE);
+  dim3 grid_dim(
+      (block_x + (block_dim.x * thread_size - 1)) / (block_dim.x * thread_size),
+      (block_y + (block_dim.y * thread_size - 1)) / (block_dim.y * thread_size));
+
+  initKernel<<<grid_dim, block_dim, 0, stream>>>(temperature, val, block_x,
+      block_y, thread_size);
+
+  hapiCheck(cudaPeekAtLastError());
+}
+
 void invokePackingKernel(double* temperature, double* west_ghost, double* east_ghost,
     double* north_ghost, double* south_ghost, int block_x, int block_y,
     cudaStream_t stream) {
@@ -86,6 +137,18 @@ void invokeUnpackingKernel(double* temperature, double* ghost, int width,
 
   unpackingKernel<<<grid_dim, block_dim, 0, stream>>>(temperature, ghost, width,
       dir, block_x, block_y);
+
+  hapiCheck(cudaPeekAtLastError());
+}
+
+void invokeBoundaryKernel(double* temperature, bool west_bound, bool east_bound,
+    bool north_bound, bool south_bound, int block_x, int block_y,
+    cudaStream_t stream) {
+  dim3 block_dim(TILE_SIZE * TILE_SIZE);
+  dim3 grid_dim((2 * block_x + 2 * block_y + block_dim.x - 1) / block_dim.x);
+
+  boundaryKernel<<<grid_dim, block_dim, 0, stream>>>(temperature, west_bound,
+      east_bound, north_bound, south_bound, block_x, block_y);
 
   hapiCheck(cudaPeekAtLastError());
 }
