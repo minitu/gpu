@@ -1,5 +1,6 @@
 mainmodule stencil2d {
   readonly CProxy_Main main_proxy;
+  readonly CProxy_GPUHandler gpuhandler_proxy;
   readonly CProxy_Block block_proxy;
   readonly int grid_dim;
   readonly int block_x;
@@ -13,16 +14,23 @@ mainmodule stencil2d {
 
   mainchare Main {
     entry Main(CkArgMsg* m);
-    entry void done();
+    entry [reductiontarget] void ready();
+    entry [reductiontarget] void finalize();
+    entry void terminate();
+  };
+
+  group GPUHandler {
+    entry GPUHandler();
+    entry void setGPU();
   };
 
   array [2D] Block {
-    entry Block(void);
+    entry Block();
     entry void init();
     entry void prepareGhostsDone(CkMessage* msg);
     entry void receiveGhosts(int ref, int dir, int w, double gh[w]);
     entry void updateDone(CkMessage* msg);
-    entry void validateAndTerminate();
+    entry void validate();
 
     entry void iterate() {
       serial {
@@ -57,10 +65,8 @@ mainmodule stencil2d {
         total_time += CkWallTimer() - iter_start_time;
 
         if (my_iter == n_iters-1) {
-          // Last iteration, terminate
-          if (thisIndex.x == 0 && thisIndex.y == 0) {
-            thisProxy[thisIndex].validateAndTerminate();
-          }
+          // Last iteration, reduce back to main for validation
+          contribute(CkCallback(CkReductionTarget(Main, finalize), main_proxy));
         }
         else {
           // Swap pointers

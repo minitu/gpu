@@ -7,6 +7,7 @@
 #include "stencil2d.h"
 
 /* readonly */ CProxy_Main main_proxy;
+/* readonly */ CProxy_GPUHandler gpuhandler_proxy;
 /* readonly */ CProxy_Block block_proxy;
 /* readonly */ int grid_dim;
 /* readonly */ int block_x;
@@ -93,21 +94,64 @@ class Main : public CBase_Main {
     CkPrintf("Iters: %d, Thread coarsening: %d, Unified memory: %d\n", n_iters,
         thread_coarsening, unified_memory);
 
+    // Override GPU settings set by HAPI
+    gpuhandler_proxy = CProxy_GPUHandler::ckNew();
+    gpuhandler_proxy.setGPU();
+  }
+
+  void ready() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Main::ready", NVTXColor::Turquoise);
+#endif
+
     // Create 2D chare array
     block_proxy = CProxy_Block::ckNew(n_chares_x, n_chares_y);
-
     start_time = CkWallTimer();
-
     block_proxy.init();
   }
 
-  void done() {
+  void finalize() {
 #ifdef USE_NVTX
-    NVTXTracer nvtx_range("Main::done", NVTXColor::Turquoise);
+    NVTXTracer nvtx_range("Main::finalize", NVTXColor::Turquoise);
+#endif
+
+    block_proxy(0, 0).validate();
+  }
+
+  void terminate() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range("Main::terminate", NVTXColor::Turquoise);
 #endif
 
     CkPrintf("Elapsed: %.6lf s\n", CkWallTimer() - start_time);
     CkExit();
+  }
+};
+
+class GPUHandler : public CBase_GPUHandler {
+public:
+  int device_count;
+  int local_pe_id;
+  int gpu_id;
+
+  GPUHandler() {
+    device_count = 0;
+    gpu_id = 0;
+  }
+
+  void setGPU() {
+    hapiCheck(cudaGetDeviceCount(&device_count));
+    CkAssert(device_count > 0);
+
+    // Block mapping of PEs to GPUs
+    int pes_per_process = CkNumPes() / CkNumNodes();
+    local_pe_id = CkMyPe() % pes_per_process;
+    gpu_id = local_pe_id / (pes_per_process / device_count);
+    hapiCheck(cudaSetDevice(gpu_id));
+
+    CkPrintf("[PE %d, LPE %d] Set CUDA device to %d\n", CkMyPe(), local_pe_id, gpu_id);
+
+    contribute(CkCallback(CkReductionTarget(Main, ready), main_proxy));
   }
 };
 
@@ -372,7 +416,7 @@ class Block : public CBase_Block {
     hapiAddCallback(stream, cb);
   }
 
-  void validateAndTerminate() {
+  void validate() {
     if (print_block) {
       CkPrintf("Block (%d, %d)\n", thisIndex.x, thisIndex.y);
 
@@ -402,14 +446,14 @@ class Block : public CBase_Block {
 
     // Move on to next chare or terminate at last chare
     if (thisIndex.x == n_chares_x - 1 && thisIndex.y == n_chares_y - 1) {
-      main_proxy.done();
+      main_proxy.terminate();
     }
     else {
       if (thisIndex.x == n_chares_x - 1) {
-        thisProxy(0, thisIndex.y + 1).validateAndTerminate();
+        thisProxy(0, thisIndex.y + 1).validate();
       }
       else {
-        thisProxy(thisIndex.x + 1, thisIndex.y).validateAndTerminate();
+        thisProxy(thisIndex.x + 1, thisIndex.y).validate();
       }
     }
   }
