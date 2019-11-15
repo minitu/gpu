@@ -25,20 +25,28 @@ __global__ void packingKernel(double* temperature, double* west_ghost,
     double* east_ghost, double* north_ghost, double* south_ghost, int block_x,
     int block_y) {
   int i = blockDim.x * blockIdx.x + threadIdx.x;
-  if (i < block_y && west_ghost != NULL) {
-    west_ghost[i] = temperature[(block_x + 2) * (1 + i) + 1];
+  if (i < block_y) {
+    if (west_ghost) {
+      west_ghost[i] = temperature[(block_x + 2) * (1 + i) + 1];
+    }
   }
-  else if (i < 2 * block_y && east_ghost != NULL) {
-    i -= block_y;
-    east_ghost[i] = temperature[(block_x + 2) * (1 + i) + block_x];
+  else if (i < 2 * block_y) {
+    if (east_ghost) {
+      i -= block_y;
+      east_ghost[i] = temperature[(block_x + 2) * (1 + i) + block_x];
+    }
   }
-  else if (i < 2 * block_y + block_x && north_ghost != NULL) {
-    i -= 2 * block_y;
-    north_ghost[i] = temperature[(block_x + 2) + (1 + i)];
+  else if (i < 2 * block_y + block_x) {
+    if (north_ghost) {
+      i -= 2 * block_y;
+      north_ghost[i] = temperature[(block_x + 2) + (1 + i)];
+    }
   }
-  else if (i < 2 * block_y + 2 * block_x && south_ghost != NULL) {
-    i -= (2 * block_y + block_x);
-    south_ghost[i] = temperature[(block_x + 2) * block_y + (1 + i)];
+  else if (i < 2 * block_y + 2 * block_x) {
+    if (south_ghost) {
+      i -= (2 * block_y + block_x);
+      south_ghost[i] = temperature[(block_x + 2) * block_y + (1 + i)];
+    }
   }
 }
 
@@ -64,20 +72,28 @@ __global__ void unpackingKernel(double* temperature, double* ghost, int width,
 __global__ void boundaryKernel(double* temperature, bool west_bound, bool east_bound,
     bool north_bound, bool south_bound, int block_x, int block_y) {
   int i = blockDim.x * blockIdx.x + threadIdx.x;
-  if (i < block_y && west_bound) {
-    temperature[(block_x + 2) * (1 + i)] = 1.0;
+  if (i < block_y) {
+    if (west_bound) {
+      temperature[(block_x + 2) * (1 + i)] = 1.0;
+    }
   }
-  else if (i < 2 * block_y && east_bound) {
-    i -= block_y;
-    temperature[(block_x + 2) * (1 + i) + (block_x + 1)] = 1.0;
+  else if (i < 2 * block_y) {
+    if (east_bound) {
+      i -= block_y;
+      temperature[(block_x + 2) * (1 + i) + (block_x + 1)] = 1.0;
+    }
   }
-  else if (i < 2 * block_y + block_x && north_bound) {
-    i -= 2 * block_y;
-    temperature[1 + i] = 1.0;
+  else if (i < 2 * block_y + block_x) {
+    if (north_bound) {
+      i -= 2 * block_y;
+      temperature[1 + i] = 1.0;
+    }
   }
-  else if (i < 2 * block_y + 2 * block_x && south_bound) {
-    i -= (2 * block_y + block_x);
-    temperature[(block_x + 2) * (block_y + 1) + (1 + i)] = 1.0;
+  else if (i < 2 * block_y + 2 * block_x) {
+    if (south_bound) {
+      i -= (2 * block_y + block_x);
+      temperature[(block_x + 2) * (block_y + 1) + (1 + i)] = 1.0;
+    }
   }
 }
 

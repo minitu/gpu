@@ -392,7 +392,6 @@ class Block : public CBase_Block {
       }
       CkPrintf("\n");
     }
-    CkPrintf("\n");
 #endif
 
     CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
