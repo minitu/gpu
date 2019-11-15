@@ -9,6 +9,7 @@ mainmodule stencil2d {
   readonly int n_iters;
   readonly int thread_coarsening;
   readonly bool unified_memory;
+  readonly bool print_block;
 
   mainchare Main {
     entry Main(CkArgMsg* m);

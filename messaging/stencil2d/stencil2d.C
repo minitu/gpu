@@ -6,8 +6,6 @@
 #endif
 #include "stencil2d.h"
 
-#define PRINT 1
-
 /* readonly */ CProxy_Main main_proxy;
 /* readonly */ CProxy_Block block_proxy;
 /* readonly */ int grid_dim;
@@ -18,6 +16,7 @@
 /* readonly */ int n_iters;
 /* readonly */ int thread_coarsening;
 /* readonly */ bool unified_memory;
+/* readonly */ bool print_block;
 
 extern void invokeInitKernel(double* temperature, double val, int block_x,
     int block_y, int thread_coarsening, cudaStream_t stream);
@@ -48,10 +47,11 @@ class Main : public CBase_Main {
     n_iters = 100;
     thread_coarsening = 1;
     unified_memory = false;
+    print_block = false;
 
     // Process command line arguments
     int c;
-    while ((c = getopt(m->argc, m->argv, "s:x:y:i:t:u")) != -1) {
+    while ((c = getopt(m->argc, m->argv, "s:x:y:i:t:up")) != -1) {
       switch (c) {
         case 's':
           grid_dim = atoi(optarg);
@@ -70,6 +70,9 @@ class Main : public CBase_Main {
           break;
         case 'u':
           unified_memory = true;
+          break;
+        case 'p':
+          print_block = true;
           break;
         default:
           CkAbort("Unknown command line argument detected");
@@ -370,29 +373,29 @@ class Block : public CBase_Block {
   }
 
   void validateAndTerminate() {
-#if PRINT
-    CkPrintf("Block (%d, %d)\n", thisIndex.x, thisIndex.y);
+    if (print_block) {
+      CkPrintf("Block (%d, %d)\n", thisIndex.x, thisIndex.y);
 
-    // Old temperature data
-    CkPrintf("Old:\n");
-    double* temperature_val = unified_memory ? temperature : h_temperature;
-    for (int j = 0; j < block_y + 2; j++) {
-      for (int i = 0; i < block_x + 2; i++) {
-        CkPrintf("%.3lf ", temperature_val[(block_x + 2) * j + i]);
+      // Old temperature data
+      CkPrintf("Old:\n");
+      double* temperature_val = unified_memory ? temperature : h_temperature;
+      for (int j = 0; j < block_y + 2; j++) {
+        for (int i = 0; i < block_x + 2; i++) {
+          CkPrintf("%.3lf ", temperature_val[(block_x + 2) * j + i]);
+        }
+        CkPrintf("\n");
       }
-      CkPrintf("\n");
-    }
 
-    // New temperature data
-    temperature_val = unified_memory ? new_temperature : h_new_temperature;
-    CkPrintf("New:\n");
-    for (int j = 0; j < block_y + 2; j++) {
-      for (int i = 0; i < block_x + 2; i++) {
-        CkPrintf("%.3lf ", temperature_val[(block_x + 2) * j + i]);
+      // New temperature data
+      temperature_val = unified_memory ? new_temperature : h_new_temperature;
+      CkPrintf("New:\n");
+      for (int j = 0; j < block_y + 2; j++) {
+        for (int i = 0; i < block_x + 2; i++) {
+          CkPrintf("%.3lf ", temperature_val[(block_x + 2) * j + i]);
+        }
+        CkPrintf("\n");
       }
-      CkPrintf("\n");
     }
-#endif
 
     CkPrintf("[%4d] Average time per iteration: %.3lf us\n", thisFlatIndex,
         (total_time / n_iters) * 1000000);
