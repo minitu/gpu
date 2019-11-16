@@ -131,25 +131,59 @@ class Main : public CBase_Main {
 class GPUHandler : public CBase_GPUHandler {
 public:
   int device_count;
+  int pes_per_process;
   int local_pe_id;
+  int pes_per_gpu;
   int gpu_id;
+  bool gpu_pe_handler;
 
   GPUHandler() {
     device_count = 0;
-    gpu_id = 0;
+    pes_per_process = 0;
+    local_pe_id = -1;
+    pes_per_gpu = 0;
+    gpu_id = -1;
+    gpu_pe_handler = false;
   }
 
+  // WARNING: Assumes this code was run with jsrun, where the number of GPUs
+  // accessible to each process are explicitly specified.
   void setGPU() {
+    // Get number of accessible GPUs from this PE/process
     hapiCheck(cudaGetDeviceCount(&device_count));
     CkAssert(device_count > 0);
 
     // Block mapping of PEs to GPUs
-    int pes_per_process = CkNumPes() / CkNumNodes();
+    pes_per_process = CkNumPes() / CkNumNodes();
     local_pe_id = CkMyPe() % pes_per_process;
-    gpu_id = local_pe_id / (pes_per_process / device_count);
+    pes_per_gpu = pes_per_process / device_count;
+    gpu_id = local_pe_id / pes_per_gpu;
     hapiCheck(cudaSetDevice(gpu_id));
 
     CkPrintf("[PE %d, LPE %d] Set CUDA device to %d\n", CkMyPe(), local_pe_id, gpu_id);
+
+    // Assign a GPU handler PE for each GPU, by choosing the first PE among
+    // the PEs mapped to a GPU
+    gpu_pe_handler = (local_pe_id % pes_per_gpu == 0);
+
+    // Following code is executed by a single PE per GPU (GPU handler)
+    if (gpu_pe_handler) {
+      CkPrintf("[PE %d, LPE %d] I'm handler for GPU %d\n", CkMyPe(), local_pe_id, gpu_id);
+      // Check if other GPUs accessible from the process can be peer-accessed,
+      // and enable peer access if so
+      int can_access_peer = 0;
+      for (int i = 0; i < device_count; i++) {
+        if (i != gpu_id) {
+          hapiCheck(cudaDeviceCanAccessPeer(&can_access_peer, gpu_id, i));
+
+          CkPrintf("Peer access from GPU %d to GPU %d: %d\n", gpu_id, i, can_access_peer);
+
+          if (can_access_peer) {
+            hapiCheck(cudaDeviceEnablePeerAccess(i, 0));
+          }
+        }
+      }
+    }
 
     contribute(CkCallback(CkReductionTarget(Main, ready), main_proxy));
   }
