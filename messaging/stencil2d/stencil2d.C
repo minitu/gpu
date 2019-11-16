@@ -17,6 +17,7 @@
 /* readonly */ int n_iters;
 /* readonly */ int thread_coarsening;
 /* readonly */ bool unified_memory;
+/* readonly */ bool direct;
 /* readonly */ bool print_block;
 
 extern void invokeInitKernel(double* temperature, double val, int block_x,
@@ -31,6 +32,14 @@ extern void invokeBoundaryKernel(double* temperature, bool west_bound,
     cudaStream_t stream);
 extern void invokeStencilKernel(double* d_temperature, double* d_new_temperature,
     int block_x, int block_y, int thread_coarsening, cudaStream_t stream);
+
+// Used to pass direction with a callback
+class DirMsg : public CMessage_DirMsg {
+public:
+  int dir;
+
+  DirMsg(int d) : dir(d) {}
+};
 
 class Main : public CBase_Main {
   double start_time;
@@ -48,11 +57,12 @@ class Main : public CBase_Main {
     n_iters = 100;
     thread_coarsening = 1;
     unified_memory = false;
+    direct = false;
     print_block = false;
 
     // Process command line arguments
     int c;
-    while ((c = getopt(m->argc, m->argv, "s:x:y:i:t:up")) != -1) {
+    while ((c = getopt(m->argc, m->argv, "s:x:y:i:t:dup")) != -1) {
       switch (c) {
         case 's':
           grid_dim = atoi(optarg);
@@ -72,6 +82,9 @@ class Main : public CBase_Main {
         case 'u':
           unified_memory = true;
           break;
+        case 'd':
+          direct = true;
+          break;
         case 'p':
           print_block = true;
           break;
@@ -89,10 +102,10 @@ class Main : public CBase_Main {
     block_y = grid_dim / n_chares_y;
 
     // Print info
-    CkPrintf("Grid: %d x %d, Chares: %d x %d, Block: %d x %d\n", grid_dim, grid_dim,
-        n_chares_x, n_chares_y, block_x, block_y);
-    CkPrintf("Iters: %d, Thread coarsening: %d, Unified memory: %d\n", n_iters,
-        thread_coarsening, unified_memory);
+    CkPrintf("Grid: %d x %d, Chares: %d x %d, Block: %d x %d, Iters: %d\n",
+        grid_dim, grid_dim, n_chares_x, n_chares_y, block_x, block_y, n_iters);
+    CkPrintf("Thread coarsening: %d, Unified memory: %d, Direct: %d\n",
+        thread_coarsening, unified_memory, direct);
 
     // Override GPU settings set by HAPI
     gpuhandler_proxy = CProxy_GPUHandler::ckNew();
@@ -234,10 +247,12 @@ class Block : public CBase_Block {
       hapiCheck(cudaFree(new_temperature));
       hapiCheck(cudaFreeHost(h_temperature));
       hapiCheck(cudaFreeHost(h_new_temperature));
-      hapiCheck(cudaFreeHost(west_ghost));
-      hapiCheck(cudaFreeHost(east_ghost));
-      hapiCheck(cudaFreeHost(north_ghost));
-      hapiCheck(cudaFreeHost(south_ghost));
+      if (!direct) {
+        hapiCheck(cudaFreeHost(west_ghost));
+        hapiCheck(cudaFreeHost(east_ghost));
+        hapiCheck(cudaFreeHost(north_ghost));
+        hapiCheck(cudaFreeHost(south_ghost));
+      }
     }
 
     cudaStreamDestroy(stream);
@@ -280,10 +295,12 @@ class Block : public CBase_Block {
       hapiCheck(cudaMalloc(&new_temperature, sizeof(double) * (block_x+2) * (block_y+2)));
       hapiCheck(cudaMallocHost(&h_temperature, sizeof(double) * (block_x+2) * (block_y+2)));
       hapiCheck(cudaMallocHost(&h_new_temperature, sizeof(double) * (block_x+2) * (block_y+2)));
-      hapiCheck(cudaMallocHost(&west_ghost, sizeof(double) * block_y));
-      hapiCheck(cudaMallocHost(&east_ghost, sizeof(double) * block_y));
-      hapiCheck(cudaMallocHost(&south_ghost, sizeof(double) * block_x));
-      hapiCheck(cudaMallocHost(&north_ghost, sizeof(double) * block_x));
+      if (!direct) {
+        hapiCheck(cudaMallocHost(&west_ghost, sizeof(double) * block_y));
+        hapiCheck(cudaMallocHost(&east_ghost, sizeof(double) * block_y));
+        hapiCheck(cudaMallocHost(&south_ghost, sizeof(double) * block_x));
+        hapiCheck(cudaMallocHost(&north_ghost, sizeof(double) * block_x));
+      }
     }
 
     cudaStreamCreate(&stream);
@@ -341,7 +358,94 @@ class Block : public CBase_Block {
     hapiAddCallback(stream, cb);
   }
 
-  void sendGhosts(void) {
+  void sendPointers() {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::sendPointers",
+        NVTXColor::MidnightBlue);
+#endif
+
+    // Send data pointers to neighbors
+    int x = thisIndex.x, y = thisIndex.y;
+    if (!west_bound)
+      thisProxy(x - 1, y).receivePointer(my_iter, EAST, (uint64_t)temperature);
+    if (!east_bound)
+      thisProxy(x + 1, y).receivePointer(my_iter, WEST, (uint64_t)temperature);
+    if (!north_bound)
+      thisProxy(x, y - 1).receivePointer(my_iter, SOUTH, (uint64_t)temperature);
+    if (!south_bound)
+      thisProxy(x, y + 1).receivePointer(my_iter, NORTH, (uint64_t)temperature);
+  }
+
+  void processPointer(int dir, uint64_t pt) {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::processPointer",
+        NVTXColor::WetAsphalt);
+#endif
+
+    double* n_temperature = (double*)pt;
+
+    switch (dir) {
+      case WEST:
+        hapiCheck(cudaMemcpy2DAsync(temperature + (block_x + 2),
+              (block_x + 2) * sizeof(double), n_temperature + (block_x + 2) + block_x,
+              (block_x + 2) * sizeof(double), sizeof(double), block_y,
+              cudaMemcpyDeviceToDevice, stream));
+        break;
+      case EAST:
+        hapiCheck(cudaMemcpy2DAsync(temperature + (block_x + 2) + (block_x + 1),
+              (block_x + 2) * sizeof(double), n_temperature + (block_x + 2) + 1,
+              (block_x + 2) * sizeof(double), sizeof(double), block_y,
+              cudaMemcpyDeviceToDevice, stream));
+        break;
+      case NORTH:
+        hapiCheck(cudaMemcpyAsync(temperature + 1,
+              n_temperature + (block_x + 2) * block_y + 1, block_x * sizeof(double),
+              cudaMemcpyDeviceToDevice, stream));
+        break;
+      case SOUTH:
+        break;
+        hapiCheck(cudaMemcpyAsync(temperature + (block_x + 2) * (block_y + 1) + 1,
+              n_temperature + (block_x + 2) + 1, block_x * sizeof(double),
+              cudaMemcpyDeviceToDevice, stream));
+      default:
+        CkAbort("Error: invalid direction");
+    }
+
+    // Create message to include direction
+    DirMsg* msg = new DirMsg(dir);
+
+    // Set up callback
+    CkCallback* cb = new CkCallback(CkIndex_Block::ghostReceived(NULL), thisProxy[thisIndex]);
+    cb->setRefnum(my_iter);
+    hapiAddCallback(stream, cb, msg);
+  }
+
+  void sendAck(int dir) {
+#ifdef USE_NVTX
+    NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::sendAck",
+        NVTXColor::WetAsphalt);
+#endif
+
+    int x = thisIndex.x, y = thisIndex.y;
+    switch (dir) {
+      case WEST:
+        thisProxy(x - 1, y).receiveAck(my_iter);
+        break;
+      case EAST:
+        thisProxy(x + 1, y).receiveAck(my_iter);
+        break;
+      case NORTH:
+        thisProxy(x, y - 1).receiveAck(my_iter);
+        break;
+      case SOUTH:
+        thisProxy(x, y + 1).receiveAck(my_iter);
+        break;
+      default:
+        CkAbort("Error: invalid direction");
+    }
+  }
+
+  void sendGhosts() {
 #ifdef USE_NVTX
     NVTXTracer nvtx_range(std::to_string(thisFlatIndex) + " Block::sendGhosts",
         NVTXColor::MidnightBlue);

@@ -10,7 +10,10 @@ mainmodule stencil2d {
   readonly int n_iters;
   readonly int thread_coarsening;
   readonly bool unified_memory;
+  readonly bool direct;
   readonly bool print_block;
+
+  message DirMsg;
 
   mainchare Main {
     entry Main(CkArgMsg* m);
@@ -27,6 +30,9 @@ mainmodule stencil2d {
   array [2D] Block {
     entry Block();
     entry void init();
+    entry void receivePointer(int ref, int dir, uint64_t pt);
+    entry void ghostReceived(DirMsg* msg);
+    entry void receiveAck(int ref);
     entry void prepareGhostsDone(CkMessage* msg);
     entry void receiveGhosts(int ref, int dir, int w, double gh[w]);
     entry void updateDone(CkMessage* msg);
@@ -36,20 +42,54 @@ mainmodule stencil2d {
       serial {
         iter_start_time = CkWallTimer();
 
-        // Prepare ghost regions for sending
-        prepareGhosts();
+        if (direct) {
+          // Send data pointer for peer transfer between GPUs
+          sendPointers();
+        }
+        else {
+          // Prepare ghost regions for sending
+          prepareGhosts();
+        }
       }
 
-      // Send ghosts once they are prepared
-      when prepareGhostsDone[my_iter](const CkMessage* msg) serial {
-        delete msg;
-        sendGhosts();
-      }
+      if (direct) {
+        // Receive peer-accessible data pointers from neighbors
+        for (remote_count = 0; remote_count < neighbors; remote_count++) {
+          when receivePointer[my_iter](int ref, int dir, uint64_t pt) serial {
+            processPointer(dir, pt);
+          }
+        }
 
-      // Receive ghost data from neighbors
-      for (remote_count = 0; remote_count < neighbors; remote_count++) {
-        when receiveGhosts[my_iter](int ref, int dir, int w, double buf[w]) serial {
-          processGhosts(dir, w, buf);
+        // Send ACK to sender once peer transfer is complete
+        for (remote_count = 0; remote_count < neighbors; remote_count++) {
+          when ghostReceived[my_iter](const DirMsg* msg) serial {
+            int dir = msg->dir;
+            CkPrintf("%d done with transfer from dir %d\n", thisFlatIndex, dir);
+            delete msg;
+            sendAck(dir);
+          }
+        }
+
+        // TODO: overlap with sending ACKs?
+        // Receive ACKs from neighbors
+        for (remote_count = 0; remote_count < neighbors; remote_count++) {
+          when receiveAck[my_iter](int ref) serial {
+            // Don't need to do anything
+          }
+        }
+      }
+      else {
+        // Send ghosts once they are prepared
+        when prepareGhostsDone[my_iter](const CkMessage* msg) serial {
+          delete msg;
+          sendGhosts();
+        }
+
+        // Receive ghost data from neighbors
+        for (remote_count = 0; remote_count < neighbors; remote_count++) {
+          when receiveGhosts[my_iter](int ref, int dir, int w, double buf[w]) serial {
+            processGhosts(dir, w, buf);
+          }
         }
       }
 
