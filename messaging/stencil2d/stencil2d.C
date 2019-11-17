@@ -403,10 +403,10 @@ class Block : public CBase_Block {
               cudaMemcpyDeviceToDevice, stream));
         break;
       case SOUTH:
-        break;
         hapiCheck(cudaMemcpyAsync(temperature + (block_x + 2) * (block_y + 1) + 1,
               n_temperature + (block_x + 2) + 1, block_x * sizeof(double),
               cudaMemcpyDeviceToDevice, stream));
+        break;
       default:
         CkAbort("Error: invalid direction");
     }

@@ -64,7 +64,6 @@ mainmodule stencil2d {
         for (remote_count = 0; remote_count < neighbors; remote_count++) {
           when ghostReceived[my_iter](const DirMsg* msg) serial {
             int dir = msg->dir;
-            CkPrintf("%d done with transfer from dir %d\n", thisFlatIndex, dir);
             delete msg;
             sendAck(dir);
           }
