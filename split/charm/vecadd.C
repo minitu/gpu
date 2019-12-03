@@ -15,7 +15,8 @@ extern void cudaVecAdd(int, double*, double*, double*, double*, double*, double*
 class Main : public CBase_Main {
  private:
   CProxy_Chunk chunks;
-  double start_time;
+  double program_start_time;
+  double kernel_start_time;
 
  public:
   Main(CkArgMsg* m) {
@@ -53,7 +54,7 @@ class Main : public CBase_Main {
       CkAbort("Vector size should be divisible by split");
     }
 
-    start_time = CkWallTimer();
+    program_start_time = CkWallTimer();
 
     // Create chunk chares and initiate H2D data transfers
     chunks = CProxy_Chunk::ckNew(split);
@@ -65,6 +66,8 @@ class Main : public CBase_Main {
     NVTXTracer nvtx_range("Main::h2d_complete", NVTXColor::Turquoise);
 #endif
 
+    kernel_start_time = CkWallTimer();
+
     chunks.kernel();
   }
 
@@ -72,6 +75,8 @@ class Main : public CBase_Main {
 #ifdef USE_NVTX
     NVTXTracer nvtx_range("Main::kernel_complete", NVTXColor::Turquoise);
 #endif
+
+    CkPrintf("\nKernel time: %.6lf s\n", CkWallTimer() - kernel_start_time);
 
     chunks.d2h();
   }
@@ -81,7 +86,7 @@ class Main : public CBase_Main {
     NVTXTracer nvtx_range("Main::d2h_complete", NVTXColor::Turquoise);
 #endif
 
-    CkPrintf("\nElapsed time: %.6lf s\n", CkWallTimer() - start_time);
+    CkPrintf("Program time: %.6lf s\n", CkWallTimer() - program_start_time);
     CkExit();
   }
 };
